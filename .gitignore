@@ -5,3 +5,8 @@ moc_*.cpp
 moc_*.h
 /.qmake.stash
 .DS_store
+/debug
+/.vscode
+/release
+Makefile.Debug
+Makefile.Release

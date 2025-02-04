@@ -1,9 +1,8 @@
-# QMLTermWidget
+# QMLWinTermWidget
 
 ## Description
-This project is a QML port of qtermwidget. It is written to be as close as possible to the upstream project in order to make cooperation possible.
 
-At the moment this plugin is powering cool-retro-term and the ubuntu-terminal-app.
+This project have for goal to make qmltermwidget compatible with Windows.
 
 This package also contains a simple test application.
 
