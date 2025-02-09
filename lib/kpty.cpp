@@ -28,6 +28,199 @@
 
 #ifdef _WIN32
 
+WPtyPrivate::WPtyPrivate(WPty* parent) : hPC(nullptr), hPipeInputWrite(INVALID_HANDLE_VALUE), hPipeOutputRead(INVALID_HANDLE_VALUE), created(false), processSpawned(false), q_ptr(parent)
+{
+    ZeroMemory(&pi, sizeof(pi));
+}
+
+WPtyPrivate::~WPtyPrivate()
+{
+}
+
+WPty::WPty() : d_ptr(new WPtyPrivate(this))
+{
+}
+
+WPty::WPty(WPtyPrivate* d) : d_ptr(d)
+{
+    d_ptr->q_ptr = this;
+}
+
+WPty::~WPty()
+{
+    Close();
+    delete d_ptr;
+}
+
+bool WPty::Create(COORD size)
+{
+    // Create two pipes: one for the input and one for the output of the pseudo console.
+    // The parent's ends will be used to write to and read from the console.
+    HANDLE hPipeInRead = INVALID_HANDLE_VALUE, hPipeInWrite = INVALID_HANDLE_VALUE;
+    HANDLE hPipeOutRead = INVALID_HANDLE_VALUE, hPipeOutWrite = INVALID_HANDLE_VALUE;
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+
+    if (!CreatePipe(&hPipeInRead, &hPipeInWrite, &sa, 0)) {
+        std::cerr << "Failed to create input pipe." << std::endl;
+        return false;
+    }
+
+    if (!CreatePipe(&hPipeOutRead, &hPipeOutWrite, &sa, 0)) {
+        std::cerr << "Failed to create output pipe." << std::endl;
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        return false;
+    }
+
+    // CreatePseudoConsole takes the read end of the input pipe and the write end of the output pipe.
+    HRESULT hr = CreatePseudoConsole(size, hPipeInRead, hPipeOutWrite, 0, &d->hPC);
+    if (FAILED(hr)) {
+        std::cerr << "CreatePseudoConsole failed: 0x" << std::hex << hr << std::endl;
+        CloseHandle(hPipeInRead);
+        CloseHandle(hPipeInWrite);
+        CloseHandle(hPipeOutRead);
+        CloseHandle(hPipeOutWrite);
+        return false;
+    }
+
+    CloseHandle(hPipeInRead);
+    CloseHandle(hPipeOutWrite);
+
+    // Save the parent's ends for I/O: write to the input pipe and read from the output pipe.
+    d->hPipeInputWrite = hPipeInWrite;
+    d->hPipeOutputRead = hPipeOutRead;
+
+    d->created = true;
+    return true;
+}
+
+bool WPty::SpawnProcess(LPCWSTR commandLine)
+{
+    if (!d->created) {
+        std::cerr << "Pseudo console not created." << std::endl;
+        return false;
+    }
+
+    // Initialize the attribute list for process creation.
+    SIZE_T attrListSize = 0;
+    // First call to determine buffer size.
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrListSize);
+    std::vector<BYTE> attrListBuffer(attrListSize);
+    LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrListBuffer.data());
+    if (!InitializeProcThreadAttributeList(lpAttributeList, 1, 0, &attrListSize)) {
+        std::cerr << "InitializeProcThreadAttributeList failed." << std::endl;
+        return false;
+    }
+
+    // Set the pseudo console attribute.
+    if (!UpdateProcThreadAttribute(lpAttributeList,
+        0,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+        d->hPC,
+        sizeof(d->hPC),
+        nullptr,
+        nullptr))
+    {
+        std::cerr << "UpdateProcThreadAttribute failed." << std::endl;
+        DeleteProcThreadAttributeList(lpAttributeList);
+        return false;
+    }
+
+    // Setup STARTUPINFOEX with the attribute list.
+    STARTUPINFOEXW siEx;
+    ZeroMemory(&siEx, sizeof(siEx));
+    siEx.StartupInfo.cb = sizeof(siEx);
+    siEx.lpAttributeList = lpAttributeList;
+
+    // Create the child process.
+    BOOL result = CreateProcessW(
+        nullptr,
+        const_cast<LPWSTR>(commandLine), // Command-line; note that CreateProcess may modify this string.
+        nullptr,
+        nullptr,
+        FALSE,
+        EXTENDED_STARTUPINFO_PRESENT,
+        nullptr,
+        nullptr,
+        &siEx.StartupInfo,
+        &d->pi
+    );
+
+    // Delete the attribute list after process creation.
+    DeleteProcThreadAttributeList(lpAttributeList);
+
+    if (!result) {
+        std::cerr << "CreateProcessW failed: " << GetLastError() << std::endl;
+        return false;
+    }
+
+    d->processSpawned = true;
+    return true;
+}
+
+bool WPty::Write(const char* buffer, size_t length, DWORD& written)
+{
+    if (d->hPipeInputWrite == INVALID_HANDLE_VALUE)
+        return false;
+    return WriteFile(d->hPipeInputWrite, buffer, static_cast<DWORD>(length), &written, nullptr) == TRUE;
+}
+
+bool WPty::Read(char* buffer, size_t length, DWORD& readBytes)
+{
+    if (d->hPipeOutputRead == INVALID_HANDLE_VALUE)
+        return false;
+    return ReadFile(d->hPipeOutputRead, buffer, static_cast<DWORD>(length), &readBytes, nullptr) == TRUE;
+}
+
+bool WPty::Resize(short columns, short rows)
+{
+    if (!d->created || d->hPC == nullptr)
+        return false;
+    COORD size = { columns, rows };
+    HRESULT hr = ResizePseudoConsole(d->hPC, size);
+    return SUCCEEDED(hr);
+}
+
+bool WPty::WaitForExit(DWORD timeout)
+{
+    if (!d->processSpawned)
+        return false;
+    DWORD result = WaitForSingleObject(d->pi.hProcess, timeout);
+    return (result == WAIT_OBJECT_0);
+}
+
+void WPty::Close()
+{
+    // Close the parent's pipe handles.
+    if (d->hPipeInputWrite != INVALID_HANDLE_VALUE) {
+        CloseHandle(d->hPipeInputWrite);
+        d->hPipeInputWrite = INVALID_HANDLE_VALUE;
+    }
+    if (d->hPipeOutputRead != INVALID_HANDLE_VALUE) {
+        CloseHandle(d->hPipeOutputRead);
+        d->hPipeOutputRead = INVALID_HANDLE_VALUE;
+    }
+
+    // Close the pseudo console.
+    if (d->hPC) {
+        ClosePseudoConsole(d->hPC);
+        d->hPC = nullptr;
+    }
+
+    // Close the child process handles if a process was spawned.
+    if (d->processSpawned) {
+        if (d->pi.hProcess) {
+            CloseHandle(d->pi.hProcess);
+            d->pi.hProcess = nullptr;
+        }
+        if (d->pi.hThread) {
+            CloseHandle(d->pi.hThread);
+            d->pi.hThread = nullptr;
+        }
+        d->processSpawned = false;
+    }
+}
+
 #else
 #if defined(__FreeBSD__) || defined(__DragonFly__)
 #define HAVE_LOGIN

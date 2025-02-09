@@ -32,7 +32,46 @@ class WPtyPrivate;
 
 class WPty
 {
+    Q_DECLARE_PRIVATE(WPty)
+
 public:
+    WPty();
+    ~WPty();
+
+    WPty(const WPty&) = delete;
+    WPty& operator=(const WPty&) = delete;
+
+    /// Create the pseudo console with the specified window size (columns x rows).
+    bool Create(COORD size);
+
+    /// Spawn a process (e.g. "cmd.exe") attached to the pseudo console.
+    bool SpawnProcess(LPCWSTR commandLine);
+
+    /// Write data to the pty (this is the input to the attached process).
+    bool Write(const char* buffer, size_t length, DWORD& written);
+
+    /// Read data from the pty (this is the output from the attached process).
+    bool Read(char* buffer, size_t length, DWORD& readBytes);
+
+    /// Resize the pseudo console.
+    bool Resize(short columns, short rows);
+
+    /// Wait for the attached process to exit (with an optional timeout).
+    bool WaitForExit(DWORD timeout = INFINITE);
+
+    /// Clean up all handles and resources.
+    void Close();
+
+protected:
+    /**
+     * @internal
+     */
+    WPty(WPtyPrivate* d);
+
+    /**
+     * @internal
+     */
+    WPtyPrivate* const d_ptr;
 };
 
 #else
