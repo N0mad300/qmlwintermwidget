@@ -27,23 +27,44 @@
 
 #include <QByteArray>
 
-class KPtyPrivate {
+#ifdef _WIN32
+class WPtyPrivate
+{
 public:
+    Q_DECLARE_PUBLIC(WPty)
 
+    WPtyPrivate(WPty *parent);
+    virtual ~WPtyPrivate();
+
+    HPCON hPC;              // Handle to the ConPTY instance.
+    HANDLE hPipeInputWrite; // Parent's write handle to ConPTY input.
+    HANDLE hPipeOutputRead; // Parent's read handle from ConPTY output.
+    PROCESS_INFORMATION pi; // Information about the spawned process.
+
+    bool created;
+    bool processSpawned;
+
+    WPty *q_ptr;
+};
+#else
+class KPtyPrivate
+{
+public:
     Q_DECLARE_PUBLIC(KPty)
 
-    KPtyPrivate(KPty* parent);
+    KPtyPrivate(KPty *parent);
     virtual ~KPtyPrivate();
 
     bool chownpty(bool grant);
 
     int masterFd;
     int slaveFd;
-    bool ownMaster:1;
+    bool ownMaster : 1;
 
     QByteArray ttyName;
 
     KPty *q_ptr;
 };
+#endif
 
 #endif
